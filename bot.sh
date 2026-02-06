@@ -36,9 +36,21 @@ echo "📦 Checking for LXD/LXC..."
 if ! command -v lxc &> /dev/null; then
     echo "📥 Installing LXD via snap..."
     sudo snap install lxd
-    # Wait for snap to be ready
-    sleep 5
-    sudo lxd init --auto
+fi
+
+# Ensure LXD is initialized and storage pool exists
+echo "⚙️ Initializing LXD and Storage..."
+# Wait for LXD socket to be available
+while [ ! -e /var/snap/lxd/common/lxd/unix.socket ]; do 
+    echo "Waiting for LXD socket..."
+    sleep 2
+done
+
+sudo lxd init --auto || true
+
+if ! sudo lxc storage show default &> /dev/null; then
+    echo "🔨 Creating 'default' storage pool..."
+    sudo lxc storage create default dir || echo "⚠️ Storage pool creation failed or already exists."
 fi
 
 echo "🔧 Creating RTC wrapper for LXC..."
