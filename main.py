@@ -468,9 +468,17 @@ async def vps_monitor():
 @bot.event
 async def on_ready():
     logger.info(f'{bot.user} has connected to Discord!')
+    
+    # To sync to a specific test server instantly, uncomment and set your Guild ID:
+    # TEST_GUILD_ID = 123456789012345678  # Replace with your server ID
+    # guild = discord.Object(id=TEST_GUILD_ID)
+    # bot.tree.copy_global_to(guild=guild)
+    # await bot.tree.sync(guild=guild)
+
     try:
-        synced = await bot.tree.sync()
-        logger.info(f"Synced {len(synced)} slash commands")
+        # Global sync (takes time to propagate)
+        await bot.tree.sync()
+        logger.info("Global slash commands synced")
     except Exception as e:
         logger.error(f"Failed to sync slash commands: {e}")
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="RathamCloud VPS Manager"))
@@ -498,6 +506,26 @@ async def on_command_error(ctx, error):
         await ctx.send(embed=create_error_embed("System Error", "An unexpected error occurred. RathamCloud support has been notified."))
 
 # Bot commands
+@bot.command(name='sync')
+@is_main_admin()
+async def sync_commands(ctx, guild_id: Optional[int] = None):
+    """Sync slash commands instantly to a server or globally"""
+    if guild_id:
+        guild = discord.Object(id=guild_id)
+    else:
+        guild = ctx.guild
+
+    try:
+        if guild:
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            await ctx.send(embed=create_success_embed("Sync Complete", f"Synced {len(synced)} commands to guild `{guild.id if hasattr(guild, 'id') else guild}`."))
+        else:
+            synced = await bot.tree.sync()
+            await ctx.send(embed=create_success_embed("Global Sync", f"Synced {len(synced)} commands globally. (May take up to 1 hour)"))
+    except Exception as e:
+        await ctx.send(embed=create_error_embed("Sync Failed", str(e)))
+
 @bot.hybrid_command(name='ping')
 async def ping(ctx):
     """Check bot latency"""
@@ -511,6 +539,143 @@ async def uptime(ctx):
     up = get_uptime()
     embed = create_info_embed("Host Uptime", up)
     await ctx.send(embed=embed)
+
+@bot.command(name='dynamic-register')
+@is_main_admin()
+async def dynamic_register(ctx, guild_id: int):
+    """Dynamically adds a slash command to a specific guild without decorators"""
+    
+    # 1. Define the callback function that the slash command will execute
+    async def dynamic_hello_callback(interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f"Hello! This command was dynamically registered to this guild by {ctx.author.name}.",
+            ephemeral=True
+        )
+
+    # 2. Create the Command object manually
+    new_command = app_commands.Command(
+        name="dynamic-hello",
+        description="A command added at runtime without decorators",
+        callback=dynamic_hello_callback
+    )
+
+    try:
+        # 3. Add the command to the tree for the specific guild
+        guild_obj = discord.Object(id=guild_id)
+        bot.tree.add_command(new_command, guild=guild_obj)
+        
+        # 4. Sync the tree for that guild to make it appear instantly
+        synced = await bot.tree.sync(guild=guild_obj)
+        await ctx.send(embed=create_success_embed("Dynamic Registration", f"Successfully registered `/dynamic-hello` to guild `{guild_id}`."))
+    except Exception as e:
+        await ctx.send(embed=create_error_embed("Registration Failed", str(e)))
+
+@bot.command(name='dynamic-group-register')
+@is_main_admin()
+async def dynamic_group_register(ctx, guild_id: int):
+    """Dynamically adds a command group with subcommands to a specific guild"""
+    
+    # 1. Create the Group object
+    # Groups allow you to nest commands, resulting in a structure like /vps-tools status
+    my_group = app_commands.Group(name="vps-tools", description="Dynamic VPS management tools")
+
+    # 2. Define the callback functions for the subcommands
+    async def status_callback(interaction: discord.Interaction):
+        await interaction.response.send_message("System status: All RathamCloud nodes are healthy.", ephemeral=True)
+
+    async def info_callback(interaction: discord.Interaction):
+        await interaction.response.send_message("This is a dynamically generated info command within a group.", ephemeral=True)
+
+    # 3. Create the individual Command objects for the subcommands
+    status_cmd = app_commands.Command(
+        name="status",
+        description="Check RathamCloud system status",
+        callback=status_callback
+    )
+
+    info_cmd = app_commands.Command(
+        name="info",
+        description="Get dynamic group information",
+        callback=info_callback
+    )
+
+    # 4. Add the subcommands to the group
+    my_group.add_command(status_cmd)
+    my_group.add_command(info_cmd)
+
+    try:
+        # 5. Add the group to the tree for the specific guild
+        guild_obj = discord.Object(id=guild_id)
+        bot.tree.add_command(my_group, guild=guild_obj)
+        
+        # 6. Sync the tree for that guild to make the group appear instantly
+        await bot.tree.sync(guild=guild_obj)
+        await ctx.send(embed=create_success_embed("Dynamic Group Registered", f"Successfully registered `/vps-tools` group with {len(my_group.commands)} subcommands to guild `{guild_id}`."))
+    except Exception as e:
+        await ctx.send(embed=create_error_embed("Group Registration Failed", str(e)))
+
+@bot.command(name='dynamic-autocomplete-register')
+@is_main_admin()
+async def dynamic_autocomplete_register(ctx, guild_id: int):
+    """Dynamically adds a slash command with autocomplete to a specific guild"""
+    
+    # 1. Define the autocomplete callback
+    # This function generates suggestions based on what the user is typing
+    async def container_autocomplete(
+        interaction: discord.Interaction, 
+        current: str
+    ) -> List[app_commands.Choice[str]]:
+        choices = []
+        # Search through all containers in vps_data
+        for user_id, vps_list in vps_data.items():
+            for vps in vps_list:
+                name = vps['container_name']
+                if current.lower() in name.lower():
+                    choices.append(app_commands.Choice(name=name, value=name))
+        
+        # Limit to 25 choices (Discord's maximum)
+        return choices[:25]
+
+    # 2. Define the main command callback
+    async def search_callback(interaction: discord.Interaction, container_name: str):
+        await interaction.response.send_message(
+            f"You selected RathamCloud container: `{container_name}`",
+            ephemeral=True
+        )
+
+    # 3. Create the Command object
+    # The parameter name in the callback ('container_name') is what we link to autocomplete
+    new_command = app_commands.Command(
+        name="vps-search",
+        description="Search for a RathamCloud container with autocomplete",
+        callback=search_callback
+    )
+
+    # 4. Link the autocomplete function to the 'container_name' parameter
+    new_command.autocomplete("container_name")(container_autocomplete)
+
+    try:
+        # 5. Add to the tree for the specific guild
+        guild_obj = discord.Object(id=guild_id)
+        bot.tree.add_command(new_command, guild=guild_obj)
+        
+        # 6. Sync the tree
+        await bot.tree.sync(guild=guild_obj)
+        await ctx.send(embed=create_success_embed(
+            "Dynamic Autocomplete Registered", 
+            f"Successfully registered `/vps-search` with autocomplete to guild `{guild_id}`."
+        ))
+    except Exception as e:
+        await ctx.send(embed=create_error_embed("Registration Failed", str(e)))
+
+# Example of a command restricted to specific servers
+# Replace 123456789012345678 with your actual server ID
+@bot.hybrid_command(name='admin-debug')
+@app_commands.guilds(discord.Object(id=1210291131301101618))
+@is_main_admin()
+async def admin_debug(ctx):
+    """A debug command visible only in the management server"""
+    await ctx.send(embed=create_info_embed("Debug Info", "This command is only visible in this server."))
 
 @bot.hybrid_command(name='myvps')
 async def my_vps(ctx):
@@ -2243,89 +2408,101 @@ async def suspension_logs(ctx, container_name: str = None):
             add_field(embed, "Events", "\n".join(chunk), False)
             await ctx.send(embed=embed)
 
+class HelpView(discord.ui.View):
+    def __init__(self, author, is_admin, is_main_admin):
+        super().__init__(timeout=180)
+        self.author = author
+        
+        options = [
+            discord.SelectOption(label="User Commands", description="Basic commands for all users", emoji="👤", value="user")
+        ]
+        if is_admin:
+            options.append(discord.SelectOption(label="Admin Commands", description="VPS management for staff", emoji="🛡️", value="admin"))
+        if is_main_admin:
+            options.append(discord.SelectOption(label="Main Admin Commands", description="Bot ownership commands", emoji="👑", value="main"))
+            
+        self.select = discord.ui.Select(placeholder="Select a command category...", options=options)
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author.id:
+            return await interaction.response.send_message("This menu is only for the person who used the command.", ephemeral=True)
+            
+        selection = self.select.values[0]
+        if selection == "user":
+            embed = self.get_user_embed()
+        elif selection == "admin":
+            embed = self.get_admin_embed()
+        else:
+            embed = self.get_main_admin_embed()
+            
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    def get_user_embed(self):
+        embed = create_embed("Command Help", "Select a category from the menu to see available commands.", 0x1a1a1a)
+        user_cmds = [
+            ("!ping", "Check bot latency"),
+            ("!uptime", "Show host uptime"),
+            ("!myvps", "List your RathamCloud VPS"),
+            ("!manage", "Manage your VPS (Start/Stop/SSH)"),
+            ("!share-user @user <num>", "Share VPS access"),
+            ("!share-ruser @user <num>", "Revoke VPS access"),
+            ("!manage-shared @owner <num>", "Manage shared VPS"),
+            ("!ports [add|list|remove]", "Manage port forwards")
+        ]
+        cmd_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in user_cmds])
+        add_field(embed, "👤 User Commands", cmd_text, False)
+        return embed
+
+    def get_admin_embed(self):
+        embed = create_embed("Admin Help", "Advanced VPS management commands.", 0x1a1a1a)
+        
+        mgmt_cmds = [
+            ("!create <ram> <cpu> <disk> @user", "Deploy new VPS"),
+            ("!delete-vps @user <num>", "Remove a user's VPS"),
+            ("!suspend-vps <id>", "Suspend a VPS"),
+            ("!unsuspend-vps <id>", "Unsuspend a VPS"),
+            ("!resize-vps <id> [specs]", "Change VPS resources"),
+            ("!clone-vps <id>", "Clone an existing VPS")
+        ]
+        
+        sys_cmds = [
+            ("!RTC-list", "List all containers"),
+            ("!serverstats", "Global resource overview"),
+            ("!vpsinfo [id]", "Detailed VPS data"),
+            ("!exec <id> <cmd>", "Run command in VPS"),
+            ("!stop-vps-all", "Emergency stop all VPS"),
+            ("!snap-status", "Check host snap status"),
+            ("!node", "Node setup instructions")
+        ]
+        
+        add_field(embed, "🛡️ Management", "\n".join([f"**{c}** - {d}" for c, d in mgmt_cmds]), False)
+        add_field(embed, "⚙️ System Tools", "\n".join([f"**{c}** - {d}" for c, d in sys_cmds]), False)
+        return embed
+
+    def get_main_admin_embed(self):
+        embed = create_embed("Main Admin Help", "Bot configuration and ownership.", 0x1a1a1a)
+        main_cmds = [
+            ("!admin-add @user", "Promote to admin"),
+            ("!admin-remove @user", "Demote from admin"),
+            ("!admin-list", "View admin team"),
+            ("!sync [guild_id]", "Sync slash commands")
+        ]
+        cmd_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in main_cmds])
+        add_field(embed, "👑 Ownership Commands", cmd_text, False)
+        return embed
+
 @bot.command(name='help')
 async def show_help(ctx):
-    """Show RathamCloud help information"""
+    """Show RathamCloud help information with a menu"""
     user_id = str(ctx.author.id)
     is_user_admin = user_id == str(MAIN_ADMIN_ID) or user_id in admin_data.get("admins", [])
     is_user_main_admin = user_id == str(MAIN_ADMIN_ID)
 
-    # Create multiple embeds for help to avoid character limit
-    # First embed with user commands
-    embed = create_embed("📚 RathamCloud Command Help - User Commands", "RathamCloud VPS Manager Commands:", 0x1a1a1a)
-
-    user_commands = [
-        ("!ping", "Check RathamCloud bot latency"),
-        ("!uptime", "Show host uptime"),
-        ("!myvps", "List your RathamCloud VPS"),
-        ("!manage [@user]", "Manage your VPS or another user's VPS (Admin only)"),
-        ("!share-user @user <vps_number>", "Share RathamCloud VPS access"),
-        ("!share-ruser @user <vps_number>", "Revoke RathamCloud VPS access"),
-        ("!manage-shared @owner <vps_number>", "Manage shared RathamCloud VPS"),
-        ("!ports [add|list|remove]", "Manage port forwards (TCP/UDP)")
-    ]
-
-    user_commands_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in user_commands])
-    add_field(embed, "👤 User Commands", user_commands_text, False)
-    await ctx.send(embed=embed)
-
-    if is_user_admin:
-        # Second embed with admin commands
-        embed = create_embed("📚 RathamCloud Command Help - Admin Commands", "RathamCloud VPS Manager Commands:", 0x1a1a1a)
-
-        admin_commands = [
-            ("!RTC-list", "List all RTC containers"),
-            ("!create <ram_gb> <cpu_cores> <disk_gb> @user", "Create custom RathamCloud VPS"),
-            ("!delete-vps @user <vps_number> <reason>", "Delete user's RathamCloud VPS"),
-            ("!add-resources <vps_id> [ram] [cpu] [disk]", "Add resources to a RathamCloud VPS"),
-            ("!resize-vps <container> [ram] [cpu] [disk]", "Resize RathamCloud VPS resources"),
-            ("!suspend-vps <container> [reason]", "Suspend a RathamCloud VPS"),
-            ("!unsuspend-vps <container>", "Unsuspend a RathamCloud VPS"),
-            ("!suspension-logs [container]", "View RathamCloud suspension logs"),
-            ("!userinfo @user", "Get detailed RathamCloud user information"),
-            ("!serverstats", "Show RathamCloud server statistics"),
-            ("!vpsinfo [container]", "Get RathamCloud VPS information"),
-            ("!list-all", "View all RathamCloud VPS and user information"),
-            ("!restart-vps <container>", "Restart a RathamCloud VPS"),
-            ("!backup-vps <container>", "Create RathamCloud VPS snapshot"),
-            ("!restore-vps <container> <snapshot>", "Restore from RathamCloud snapshot"),
-            ("!list-snapshots <container>", "List RathamCloud VPS snapshots"),
-            ("!exec <container> <command>", "Execute command in RathamCloud VPS"),
-            ("!stop-vps-all", "Stop all RathamCloud VPS with RTC stop --all --force"),
-            ("!cpu-monitor <status|enable|disable>", "Control RathamCloud CPU monitoring system"),
-            ("!clone-vps <container> [new_name]", "Clone a RathamCloud VPS"),
-            ("!migrate-vps <container> <pool>", "Migrate RathamCloud VPS to storage pool"),
-            ("!vps-stats <container>", "Show RathamCloud VPS resource stats"),
-            ("!vps-network <container> <action> [value]", "Manage RathamCloud network"),
-            ("!vps-processes <container>", "List RathamCloud processes"),
-            ("!vps-logs <container> [lines]", "Show RathamCloud system logs"),
-            ("!setup-node <container> [version]", "Install Node.js in a VPS"),
-            ("!snap-status", "Check status of host snap packages"),
-            ("!ports-add-user <amount> @user", "Allocate port slots to user"),
-            ("!ports-remove-user <amount> @user", "Deallocate port slots from user"),
-            ("!ports-revoke <id>", "Revoke specific port forward"),
-            ("!node", "Show node setup instructions")
-        ]
-
-        admin_commands_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in admin_commands])
-        add_field(embed, "🛡️ Admin Commands", admin_commands_text, False)
-        add_field(embed, "💡 Tip", "Port forwards work for both TCP and UDP protocols.", False)
-        await ctx.send(embed=embed)
-
-    if is_user_main_admin:
-        # Third embed with main admin commands
-        embed = create_embed("📚 RathamCloud Command Help - Main Admin Commands", "RathamCloud VPS Manager Commands:", 0x1a1a1a)
-
-        main_admin_commands = [
-            ("!admin-add @user", "Promote to RathamCloud admin"),
-            ("!admin-remove @user", "Remove RathamCloud admin"),
-            ("!admin-list", "View all RathamCloud admins")
-        ]
-
-        main_admin_commands_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in main_admin_commands])
-        add_field(embed, "👑 Main Admin Commands", main_admin_commands_text, False)
-        embed.set_footer(text="RathamCloud VPS Manager • Auto-suspend on high usage • Enhanced monitoring")
-        await ctx.send(embed=embed)
+    view = HelpView(ctx.author, is_user_admin, is_user_main_admin)
+    embed = view.get_user_embed()
+    await ctx.send(embed=embed, view=view)
 
 # Command aliases for typos
 @bot.command(name='mangage')
