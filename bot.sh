@@ -8,6 +8,8 @@ set -e
 echo "🚀 Starting RathamCloud Bot Installation..."
 
 ORIGINAL_DIR=$(pwd)
+# Ensure snap binaries are in the path for this session
+export PATH=$PATH:/snap/bin
 
 # 1. Update System
 sudo apt update && sudo apt upgrade -y
@@ -34,14 +36,19 @@ echo "📦 Checking for LXD/LXC..."
 if ! command -v lxc &> /dev/null; then
     echo "📥 Installing LXD via snap..."
     sudo snap install lxd
+    # Wait for snap to be ready
+    sleep 5
     sudo lxd init --auto
 fi
 
 echo "🔧 Creating RTC wrapper for LXC..."
+# Find the absolute path to lxc to avoid wrapper loops
+REAL_LXC=$(which lxc || echo "/snap/bin/lxc")
+
 cat <<EOF | sudo tee /usr/local/bin/RTC > /dev/null
 #!/bin/bash
-# RathamCloud RTC Wrapper for LXC
-lxc "\$@"
+# RathamCloud RTC Wrapper for LXC (Direct Path)
+$REAL_LXC "\$@"
 EOF
 
 sudo chmod +x /usr/local/bin/RTC
