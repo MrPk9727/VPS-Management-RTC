@@ -15,8 +15,8 @@ import time
 
 # Load environment variables
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-MAIN_ADMIN_ID = int(os.getenv('MAIN_ADMIN_ID', '1210291131301101618'))
-VPS_USER_ROLE_ID = int(os.getenv('VPS_USER_ROLE_ID', '1210291131301101618'))
+MAIN_ADMIN_ID = int(os.getenv('MAIN_ADMIN_ID', '1347534067788156998'))
+VPS_USER_ROLE_ID = int(os.getenv('VPS_USER_ROLE_ID', '1469390397276029000'))
 DEFAULT_STORAGE_POOL = os.getenv('DEFAULT_STORAGE_POOL', 'default')
 CPU_THRESHOLD = int(os.getenv('CPU_THRESHOLD', '90'))
 RAM_THRESHOLD = int(os.getenv('RAM_THRESHOLD', '90'))
@@ -711,8 +711,22 @@ async def RTC_list(ctx):
 @bot.hybrid_command(name='create')
 @is_admin()
 @commands.guild_only()
-async def create_vps(ctx, ram: int, cpu: int, disk: int, user: discord.Member):
-    """Create a custom VPS for a user (Admin only) - !create <ram_gb> <cpu_cores> <disk_gb> <user>"""
+@app_commands.describe(
+    ram="RAM in GB",
+    cpu="CPU Cores",
+    disk="Disk size in GB",
+    user="The user who will own the VPS",
+    os_type="Operating System to install"
+)
+@app_commands.choices(os_type=[
+    app_commands.Choice(name="Ubuntu 24.04 LTS", value="ubuntu:24.04"),
+    app_commands.Choice(name="Ubuntu 22.04 LTS", value="ubuntu:22.04"),
+    app_commands.Choice(name="Ubuntu 20.04 LTS", value="ubuntu:20.04"),
+    app_commands.Choice(name="Debian 12", value="images:debian/12"),
+    app_commands.Choice(name="Debian 11", value="images:debian/11")
+])
+async def create_vps(ctx, ram: int, cpu: int, disk: int, user: discord.Member, os_type: str = "ubuntu:22.04"):
+    """Create a custom VPS for a user (Admin only) - !create <ram_gb> <cpu_cores> <disk_gb> <user> [os_type]"""
     if ram <= 0 or cpu <= 0 or disk <= 0:
         await ctx.send(embed=create_error_embed("Invalid Specs", "RAM, CPU, and Disk must be positive integers."))
         return
@@ -721,24 +735,36 @@ async def create_vps(ctx, ram: int, cpu: int, disk: int, user: discord.Member):
     if user_id not in vps_data:
         vps_data[user_id] = []
 
+    # Find a unique container name that doesn't exist in the system or JSON
     vps_count = len(vps_data[user_id]) + 1
-    container_name = f"RathamCloud-vps-{user_id}-{vps_count}"
+    while True:
+        container_name = f"RathamCloud-vps-{user_id}-{vps_count}"
+        status = await get_container_status(container_name)
+        if status == "Unknown":
+            break
+        vps_count += 1
+
     ram_mb = ram * 1024
 
     await ctx.send(embed=create_info_embed("Creating RathamCloud VPS", f"Deploying VPS for {user.mention}..."))
 
     try:
-        # Fixed: Use init for config before start
-        await execute_RTC(f"RTC init ubuntu:22.04 {container_name} --storage {DEFAULT_STORAGE_POOL}")
+        # Increased timeout to 600s for initialization as it may involve pulling images
+        await execute_RTC(f"RTC init {os_type} {container_name} --storage {DEFAULT_STORAGE_POOL}", timeout=600)
         await execute_RTC(f"RTC config set {container_name} limits.memory {ram_mb}MB")
         await execute_RTC(f"RTC config set {container_name} limits.cpu {cpu}")
         
+        # Enable KVM Support (Nesting and /dev/kvm access)
+        await execute_RTC(f"RTC config set {container_name} security.nesting true")
+        await execute_RTC(f"RTC config device add {container_name} kvm unix-char path=/dev/kvm")
+
         # Always resize the disk to specified size
         await execute_RTC(f"RTC config device set {container_name} root size {disk}GB")
         # Start to apply changes
         await execute_RTC(f"RTC start {container_name}")
 
-        config_str = f"{ram}GB RAM / {cpu} CPU / {disk}GB Disk"
+        os_name = "Ubuntu" if "ubuntu" in os_type else "Debian"
+        config_str = f"{os_name} | {ram}GB RAM / {cpu} CPU / {disk}GB Disk"
         vps_info = {
             "container_name": container_name,
             "ram": f"{ram}GB",
@@ -768,7 +794,7 @@ async def create_vps(ctx, ram: int, cpu: int, disk: int, user: discord.Member):
         add_field(embed, "Owner", user.mention, True)
         add_field(embed, "VPS ID", f"#{vps_count}", True)
         add_field(embed, "Container", f"`{container_name}`", True)
-        add_field(embed, "Resources", f"**RAM:** {ram}GB\n**CPU:** {cpu} Cores\n**Storage:** {disk}GB", False)
+        add_field(embed, "Resources", f"**OS:** {os_name}\n**RAM:** {ram}GB\n**CPU:** {cpu} Cores\n**Storage:** {disk}GB", False)
         await ctx.send(embed=embed)
 
         # Send comprehensive DM to user
@@ -776,13 +802,115 @@ async def create_vps(ctx, ram: int, cpu: int, disk: int, user: discord.Member):
             dm_embed = create_success_embed("RathamCloud VPS Created!", f"Your VPS has been successfully deployed by an admin!")
             add_field(dm_embed, "VPS Details", f"**VPS ID:** #{vps_count}\n**Container Name:** `{container_name}`\n**Configuration:** {config_str}\n**Status:** Running\n**Created:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", False)
             add_field(dm_embed, "Management", "• Use `!manage` to start/stop/reinstall your RathamCloud VPS\n• Use `!manage` → SSH for terminal access\n• Contact RathamCloud admin for upgrades or issues", False)
-            add_field(dm_embed, "Important Notes", "• Full root access via SSH\n• Ubuntu 22.04 pre-installed\n• Back up your data regularly with RathamCloud tools", False)
+            add_field(dm_embed, "Important Notes", f"• Full root access via SSH\n• {os_name} pre-installed\n• Back up your data regularly with RathamCloud tools", False)
             await user.send(embed=dm_embed)
         except discord.Forbidden:
             await ctx.send(embed=create_info_embed("Notification Failed", f"Couldn't send DM to {user.mention}. Please ensure DMs are enabled."))
 
     except Exception as e:
         await ctx.send(embed=create_error_embed("Creation Failed", f"Error: {str(e)}"))
+
+class ReinstallOSView(discord.ui.View):
+    def __init__(self, parent_view, container_name, vps, owner_id, selected_index):
+        super().__init__(timeout=120)
+        self.parent_view = parent_view
+        self.container_name = container_name
+        self.vps = vps
+        self.owner_id = owner_id
+        self.selected_index = selected_index
+
+        options = [
+            discord.SelectOption(label="Ubuntu 24.04 LTS", value="ubuntu:24.04", description="Noble Numbat", emoji="🟠"),
+            discord.SelectOption(label="Ubuntu 22.04 LTS", value="ubuntu:22.04", description="Jammy Jellyfish", emoji="🟠"),
+            discord.SelectOption(label="Ubuntu 20.04 LTS", value="ubuntu:20.04", description="Focal Fossa", emoji="🟠"),
+            discord.SelectOption(label="Debian 12", value="images:debian/12", description="Bookworm", emoji="🌀"),
+            discord.SelectOption(label="Debian 11", value="images:debian/11", description="Bullseye", emoji="🌀"),
+        ]
+        self.select = discord.ui.Select(placeholder="Choose Operating System & Version...", options=options)
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        selected_image = self.select.values[0]
+        selected_label = [o.label for o in self.select.options if o.value == selected_image][0]
+        
+        view = ConfirmReinstallView(self.parent_view, self.container_name, self.vps, self.owner_id, self.selected_index, selected_image, selected_label)
+        embed = create_warning_embed("Confirm Reinstall", 
+            f"⚠️ **WARNING:** This will erase all data on VPS `{self.container_name}` and install **{selected_label}**.\n\n"
+            "This action cannot be undone. Continue?")
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class ConfirmReinstallView(discord.ui.View):
+    def __init__(self, parent_view, container_name, vps, owner_id, selected_index, image, label):
+        super().__init__(timeout=60)
+        self.parent_view = parent_view
+        self.container_name = container_name
+        self.vps = vps
+        self.owner_id = owner_id
+        self.selected_index = selected_index
+        self.image = image
+        self.label = label
+
+    @discord.ui.button(label="Confirm Reinstall", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.followup.send(embed=create_info_embed("Reinstalling", f"Stopping and removing `{self.container_name}`..."), ephemeral=True)
+            
+            # Force stop and delete
+            try:
+                await execute_RTC(f"RTC stop {self.container_name} --force")
+            except Exception:
+                pass
+            await execute_RTC(f"RTC delete {self.container_name} --force")
+
+            # Recreate with selected OS
+            await interaction.followup.send(embed=create_info_embed("Deploying", f"Installing {self.label} in `{self.container_name}`..."), ephemeral=True)
+            
+            original_ram = self.vps["ram"]
+            original_cpu = self.vps["cpu"]
+            original_storage = self.vps["storage"]
+            ram_gb = int(original_ram.replace("GB", ""))
+            ram_mb = ram_gb * 1024
+            storage_gb = int(original_storage.replace("GB", ""))
+
+            # Use 600s timeout for image pulling
+            await execute_RTC(f"RTC init {self.image} {self.container_name} --storage {DEFAULT_STORAGE_POOL}", timeout=600)
+            await execute_RTC(f"RTC config set {self.container_name} limits.memory {ram_mb}MB")
+            await execute_RTC(f"RTC config set {self.container_name} limits.cpu {original_cpu}")
+            await execute_RTC(f"RTC config device set {self.container_name} root size {storage_gb}GB")
+
+            # Enable KVM Support (Nesting and /dev/kvm access)
+            await execute_RTC(f"RTC config set {self.container_name} security.nesting true")
+            await execute_RTC(f"RTC config device add {self.container_name} kvm unix-char path=/dev/kvm")
+
+            await execute_RTC(f"RTC start {self.container_name}")
+
+            # Update database
+            self.vps["status"] = "running"
+            self.vps["suspended"] = False
+            self.vps["created_at"] = datetime.now().isoformat()
+            
+            # Update config string to include OS info
+            os_short = "Ubuntu" if "ubuntu" in self.image else "Debian"
+            config_str = f"{os_short} | {ram_gb}GB RAM / {original_cpu} CPU / {storage_gb}GB Disk"
+            self.vps["config"] = config_str
+            
+            save_data()
+            
+            await interaction.followup.send(embed=create_success_embed("Reinstall Complete", f"RathamCloud VPS `{self.container_name}` has been reinstalled with **{self.label}**!"), ephemeral=True)
+
+            # Refresh the management view
+            new_embed = await self.parent_view.create_vps_embed(self.parent_view.selected_index)
+            await interaction.followup.send(embed=new_embed, ephemeral=True)
+
+        except Exception as e:
+            await interaction.followup.send(embed=create_error_embed("Reinstall Failed", f"Error: {str(e)}"), ephemeral=True)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        new_embed = await self.parent_view.create_vps_embed(self.parent_view.selected_index)
+        await interaction.response.edit_message(embed=new_embed, view=self.parent_view)
 
 class ManageView(discord.ui.View):
     def __init__(self, user_id, vps_list, is_shared=False, owner_id=None, is_admin=False):
@@ -935,68 +1063,9 @@ class ManageView(discord.ui.View):
                 await interaction.response.send_message(embed=create_error_embed("Cannot Reinstall", "Unsuspend the RathamCloud VPS first."), ephemeral=True)
                 return
 
-            confirm_embed = create_warning_embed("RathamCloud Reinstall Warning",
-                f"⚠️ **WARNING:** This will erase all data on VPS `{container_name}` and reinstall Ubuntu 22.04.\n\n"
-                f"This action cannot be undone. Continue?")
-
-            class ConfirmView(discord.ui.View):
-                def __init__(self, parent_view, container_name, vps, owner_id, selected_index):
-                    super().__init__(timeout=60)
-                    self.parent_view = parent_view
-                    self.container_name = container_name
-                    self.vps = vps
-                    self.owner_id = owner_id
-                    self.selected_index = selected_index
-
-                @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
-                async def confirm(self, interaction: discord.Interaction, item: discord.ui.Button):
-                    await interaction.response.defer(ephemeral=True)
-                    try:
-                        # Force delete the container first
-                        await interaction.followup.send(embed=create_info_embed("Deleting Container", f"Forcefully removing container `{self.container_name}`..."), ephemeral=True)
-                        # Force stop before deletion to ensure clean removal
-                        try:
-                            await execute_RTC(f"RTC stop {self.container_name} --force")
-                        except Exception:
-                            pass # Ignore errors if container is already stopped or doesn't exist
-                        await execute_RTC(f"RTC delete {self.container_name} --force")
-
-                        # Recreate with original specifications - Fixed init + start
-                        await interaction.followup.send(embed=create_info_embed("Recreating Container", f"Creating new RathamCloud container `{self.container_name}`..."), ephemeral=True)
-                        original_ram = self.vps["ram"]
-                        original_cpu = self.vps["cpu"]
-                        original_storage = self.vps["storage"]
-                        ram_gb = int(original_ram.replace("GB", ""))
-                        ram_mb = ram_gb * 1024
-                        storage_gb = int(original_storage.replace("GB", ""))
-
-                        await execute_RTC(f"RTC init ubuntu:22.04 {self.container_name} --storage {DEFAULT_STORAGE_POOL}")
-                        await execute_RTC(f"RTC config set {self.container_name} limits.memory {ram_mb}MB")
-                        await execute_RTC(f"RTC config set {self.container_name} limits.cpu {original_cpu}")
-                        await execute_RTC(f"RTC config device set {self.container_name} root size {storage_gb}GB")
-                        await execute_RTC(f"RTC start {self.container_name}")
-
-                        self.vps["status"] = "running"
-                        self.vps["suspended"] = False
-                        self.vps["created_at"] = datetime.now().isoformat()
-                        config_str = f"{ram_gb}GB RAM / {original_cpu} CPU / {storage_gb}GB Disk"
-                        self.vps["config"] = config_str
-                        save_data()
-                        await interaction.followup.send(embed=create_success_embed("Reinstall Complete", f"RathamCloud VPS `{self.container_name}` has been successfully reinstalled!"), ephemeral=True)
-
-                        # Edit the original message if possible, but since ephemeral, send updated embed as followup
-                        new_embed = await self.parent_view.create_vps_embed(self.parent_view.selected_index)
-                        await interaction.followup.send(embed=new_embed, ephemeral=True)
-
-                    except Exception as e:
-                        await interaction.followup.send(embed=create_error_embed("Reinstall Failed", f"Error: {str(e)}"), ephemeral=True)
-
-                @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-                async def cancel(self, interaction: discord.Interaction, item: discord.ui.Button):
-                    new_embed = await self.parent_view.create_vps_embed(self.parent_view.selected_index)
-                    await interaction.response.edit_message(embed=new_embed, view=self.parent_view)
-
-            await interaction.response.send_message(embed=confirm_embed, view=ConfirmView(self, container_name, vps, self.owner_id, self.selected_index), ephemeral=True)
+            view = ReinstallOSView(self, container_name, vps, self.owner_id, self.selected_index)
+            embed = create_warning_embed("RathamCloud Reinstall", "Please select the Operating System and Version you wish to install.")
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
         elif action == 'start':
             await interaction.response.defer(ephemeral=True)
@@ -1045,8 +1114,12 @@ class ManageView(discord.ui.View):
 
                 if check_proc.returncode != 0:
                     await interaction.followup.send(embed=create_info_embed("Installing SSH", "Installing tmate..."), ephemeral=True)
-                    await execute_RTC(f"RTC exec {container_name} -- sudo apt-get update -y")
-                    await execute_RTC(f"RTC exec {container_name} -- sudo apt-get install tmate -y")
+                    # Ensure universe repository is enabled for tmate on Ubuntu
+                    await execute_RTC(f"RTC exec {container_name} -- apt-get update")
+                    await execute_RTC(f"RTC exec {container_name} -- apt-get install -y software-properties-common")
+                    await execute_RTC(f"RTC exec {container_name} -- add-apt-repository -y universe")
+                    await execute_RTC(f"RTC exec {container_name} -- apt-get update")
+                    await execute_RTC(f"RTC exec {container_name} -- apt-get install tmate -y")
                     await interaction.followup.send(embed=create_success_embed("Installed", "RathamCloud SSH service installed!"), ephemeral=True)
 
                 # Start tmate with unique session name using timestamp
@@ -2263,6 +2336,38 @@ async def ports_add_user(ctx, amount: int, user: discord.Member):
     save_data()
     await ctx.send(embed=create_success_embed("Slots Allocated", f"Allocated {amount} port slots to {user.mention}. Total: {port_data['users'][user_id]['slots']}"))
 
+@bot.command(name='setup-ssh')
+@is_admin()
+async def setup_ssh(ctx, container_name: str, password: str):
+    """Setup SSH access for a VPS container (Admin only)"""
+    await ctx.send(embed=create_info_embed("Setting up SSH", f"Configuring SSH access for `{container_name}`..."))
+    
+    # Script based on the provided fix, optimized for non-interactive execution inside containers
+    setup_script = f"""
+apt-get update && apt-get install -y openssh-server
+cat <<EOF > /etc/ssh/sshd_config
+# SSH LOGIN SETTINGS
+PasswordAuthentication yes
+PermitRootLogin yes
+PubkeyAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+
+# SFTP SETTINGS
+Subsystem sftp /usr/lib/openssh/sftp-server
+EOF
+systemctl restart ssh 2>/dev/null || service ssh restart
+echo "root:{password}" | chpasswd
+"""
+    try:
+        # Execute the setup script inside the container using RTC exec
+        await execute_RTC(f"RTC exec {container_name} -- bash -c '{setup_script}'")
+        embed = create_success_embed("SSH Setup Complete", f"SSH access enabled for `{container_name}`.")
+        add_field(embed, "Credentials", f"**User:** `root`\\n**Password:** `{password}`", False)
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(embed=create_error_embed("SSH Setup Failed", str(e)))
+
 @bot.command(name='snap-status')
 @is_admin()
 async def snap_status(ctx):
@@ -2459,7 +2564,7 @@ class HelpView(discord.ui.View):
         embed = create_embed("Admin Help", "Advanced VPS management commands.", 0x1a1a1a)
         
         mgmt_cmds = [
-            ("!create <ram> <cpu> <disk> @user", "Deploy new VPS"),
+            ("!create <ram> <cpu> <disk> @user [os]", "Deploy new VPS"),
             ("!delete-vps @user <num>", "Remove a user's VPS"),
             ("!suspend-vps <id>", "Suspend a VPS"),
             ("!unsuspend-vps <id>", "Unsuspend a VPS"),
@@ -2472,6 +2577,7 @@ class HelpView(discord.ui.View):
             ("!serverstats", "Global resource overview"),
             ("!vpsinfo [id]", "Detailed VPS data"),
             ("!exec <id> <cmd>", "Run command in VPS"),
+            ("!setup-ssh <id> <pass>", "Enable SSH/SFTP access"),
             ("!stop-vps-all", "Emergency stop all VPS"),
             ("!snap-status", "Check host snap status"),
             ("!node", "Node setup instructions")
