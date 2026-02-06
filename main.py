@@ -33,9 +33,17 @@ logging.basicConfig(
 logger = logging.getLogger('RathamCloud_vps_bot')
 
 # Check if RTC command is available
-if not shutil.which("RTC"):
-    logger.error("RTC command not found. Please ensure RTC is installed.")
-    raise SystemExit("RTC command not found. Please ensure RTC is installed.")
+RTC_EXECUTABLE = shutil.which("RTC")
+if not RTC_EXECUTABLE:
+    # Fallback to local directory
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "RTC")
+    if os.path.isfile(local_path) and os.access(local_path, os.X_OK):
+        RTC_EXECUTABLE = local_path
+    else:
+        logger.error("RTC command not found. Please ensure RTC is installed in your PATH or in the bot directory.")
+        raise SystemExit("RTC command not found. Please ensure RTC is installed.")
+
+logger.info(f"Using RTC executable: {RTC_EXECUTABLE}")
 
 # Bot setup
 intents = discord.Intents.default()
@@ -61,7 +69,7 @@ def truncate_text(text, max_length=1024):
 def create_embed(title, description="", color=0x1a1a1a):
     """Create a dark-themed embed with proper field length handling and RathamCloud branding"""
     embed = discord.Embed(
-        title=truncate_text(f"⭐ RathamCloud - {title}", 256),
+        title=truncate_text(f"🌟 RathamCloud - {title}", 256),
         description=truncate_text(description, 4096),
         color=color
     )
@@ -110,9 +118,18 @@ def load_admin_data():
         logger.warning("admin_data.json not found or corrupted, initializing with main admin")
         return {"admins": [str(MAIN_ADMIN_ID)]}
 
+def load_port_data():
+    try:
+        with open('port_data.json', 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        logger.warning("port_data.json not found or corrupted, initializing empty data")
+        return {"users": {}, "active_ports": {}}
+
 # Load all data at startup
 vps_data = load_vps_data()
 admin_data = load_admin_data()
+port_data = load_port_data()
 
 # Save data function
 def save_data():
@@ -127,6 +144,12 @@ def save_data():
         with open(temp_admin, 'w') as f:
             json.dump(admin_data, f, indent=4)
         os.replace(temp_admin, 'admin_data.json')
+        
+        temp_port = 'port_data.json.tmp'
+        with open(temp_port, 'w') as f:
+            json.dump(port_data, f, indent=4)
+        os.replace(temp_port, 'port_data.json')
+        
         logger.info("Data saved successfully")
     except Exception as e:
         logger.error(f"Error saving data: {e}")
@@ -153,6 +176,10 @@ async def execute_RTC(command, timeout=120):
     """Execute RTC command with timeout and error handling"""
     try:
         cmd = shlex.split(command)
+        # Replace 'RTC' with the actual path if it's the first argument
+        if cmd and cmd[0] == "RTC":
+            cmd[0] = RTC_EXECUTABLE
+            
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -171,6 +198,17 @@ async def execute_RTC(command, timeout=120):
     except Exception as e:
         logger.error(f"RTC Error: {command} - {str(e)}")
         raise
+
+def get_next_available_port():
+    used_ports = set()
+    for user_ports in port_data["active_ports"].values():
+        for port_info in user_ports:
+            used_ports.add(port_info["host_port"])
+    
+    for p in range(10000, 20000):
+        if p not in used_ports:
+            return p
+    return None
 
 # Get or create VPS user role
 async def get_or_create_vps_role(guild):
@@ -268,7 +306,7 @@ async def get_container_status(container_name):
     """Get the status of the RTC container"""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "info", container_name,
+            RTC_EXECUTABLE, "info", container_name,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -290,7 +328,7 @@ async def get_container_cpu_pct(container_name):
     """Get CPU usage percentage inside the container as float"""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "exec", container_name, "--", "top", "-bn1",
+            RTC_EXECUTABLE, "exec", container_name, "--", "top", "-bn1",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -318,7 +356,7 @@ async def get_container_memory(container_name):
     """Get memory usage inside the container"""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "exec", container_name, "--", "free", "-m",
+            RTC_EXECUTABLE, "exec", container_name, "--", "free", "-m",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -338,7 +376,7 @@ async def get_container_ram_pct(container_name):
     """Get RAM usage percentage inside the container as float"""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "exec", container_name, "--", "free", "-m",
+            RTC_EXECUTABLE, "exec", container_name, "--", "free", "-m",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -359,7 +397,7 @@ async def get_container_disk(container_name):
     """Get disk usage inside the container"""
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "exec", container_name, "--", "df", "-h", "/",
+            RTC_EXECUTABLE, "exec", container_name, "--", "df", "-h", "/",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -827,7 +865,7 @@ class ManageView(discord.ui.View):
             try:
                 # Check if tmate exists
                 check_proc = await asyncio.create_subprocess_exec(
-                    "RTC", "exec", container_name, "--", "which", "tmate",
+                    RTC_EXECUTABLE, "exec", container_name, "--", "which", "tmate",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
@@ -846,7 +884,7 @@ class ManageView(discord.ui.View):
 
                 # Get SSH link
                 ssh_proc = await asyncio.create_subprocess_exec(
-                    "RTC", "exec", container_name, "--", "tmate", "-S", f"/tmp/{session_name}.sock", "display", "-p", "#{tmate_ssh}",
+                    RTC_EXECUTABLE, "exec", container_name, "--", "tmate", "-S", f"/tmp/{session_name}.sock", "display", "-p", "#{tmate_ssh}",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
@@ -1468,7 +1506,7 @@ async def list_snapshots(ctx, container_name: str):
     try:
         # Improved parsing for RTC list --type snapshot
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "list", "--type", "snapshot", "--columns", "n",
+            RTC_EXECUTABLE, "list", "--type", "snapshot", "--columns", "n",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -1500,7 +1538,7 @@ async def execute_command(ctx, container_name: str, *, command: str):
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "exec", container_name, "--", "bash", "-c", command,
+            RTC_EXECUTABLE, "exec", container_name, "--", "bash", "-c", command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -1546,7 +1584,7 @@ async def stop_all_vps(ctx):
             try:
                 # Execute the RTC stop --all --force command
                 proc = await asyncio.create_subprocess_exec(
-                    "RTC", "stop", "--all", "--force",
+                    RTC_EXECUTABLE, "stop", "--all", "--force",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
@@ -1841,7 +1879,7 @@ async def vps_network(ctx, container_name: str, action: str, value: str = None):
         if action.lower() == "list":
             # List network interfaces
             proc = await asyncio.create_subprocess_exec(
-                "RTC", "exec", container_name, "--", "ip", "addr",
+                RTC_EXECUTABLE, "exec", container_name, "--", "ip", "addr",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -1882,7 +1920,7 @@ async def vps_processes(ctx, container_name: str):
     
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "exec", container_name, "--", "ps", "aux",
+            RTC_EXECUTABLE, "exec", container_name, "--", "ps", "aux",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -1911,7 +1949,7 @@ async def vps_logs(ctx, container_name: str, lines: int = 50):
     
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "exec", container_name, "--", "journalctl", "-n", str(lines),
+            RTC_EXECUTABLE, "exec", container_name, "--", "journalctl", "-n", str(lines),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -1943,7 +1981,7 @@ async def setup_node(ctx, container_name: str, version: str = "20"):
     
     try:
         proc = await asyncio.create_subprocess_exec(
-            "RTC", "exec", container_name, "--", "bash", "-c", setup_cmd,
+            RTC_EXECUTABLE, "exec", container_name, "--", "bash", "-c", setup_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -1955,6 +1993,128 @@ async def setup_node(ctx, container_name: str, version: str = "20"):
         else:
             error_output = stderr.decode().strip() or stdout.decode().strip()
             await ctx.send(embed=create_error_embed("Installation Failed", f"```\n{error_output[:1000]}\n```"))
+            
+    except Exception as e:
+        await ctx.send(embed=create_error_embed("Execution Error", str(e)))
+
+@bot.command(name='ports')
+async def ports_command(ctx, action: str = "list", arg1: int = None, arg2: int = None):
+    """Manage port forwards (TCP/UDP) - !ports [add <vps_num> <port> | list | remove <id>]"""
+    user_id = str(ctx.author.id)
+    
+    if action == "list":
+        active = port_data["active_ports"].get(user_id, [])
+        slots = port_data["users"].get(user_id, {}).get("slots", 0)
+        
+        embed = create_info_embed("🔌 Port Forwarding", f"Manage your port forwards. Available slots: **{len(active)}/{slots}**")
+        if not active:
+            add_field(embed, "Active Forwards", "No active port forwards.", False)
+        else:
+            text = []
+            for p in active:
+                text.append(f"ID: `{p['host_port']}` | VPS: `{p['container']}` | `{p['host_port']}` → `{p['internal_port']}`")
+            add_field(embed, "Active Forwards", "\n".join(text), False)
+        await ctx.send(embed=embed)
+
+    elif action == "add":
+        if arg1 is None or arg2 is None:
+            return await ctx.send(embed=create_error_embed("Usage", "Usage: `!ports add <vps_num> <port>`"))
+        
+        vps_list = vps_data.get(user_id, [])
+        if arg1 < 1 or arg1 > len(vps_list):
+            return await ctx.send(embed=create_error_embed("Invalid VPS", "Invalid VPS number."))
+        
+        vps = vps_list[arg1-1]
+        container_name = vps["container_name"]
+        
+        slots = port_data["users"].get(user_id, {}).get("slots", 0)
+        active = port_data["active_ports"].get(user_id, [])
+        if len(active) >= slots:
+            return await ctx.send(embed=create_error_embed("No Slots", "You have no available port slots. Contact an admin."))
+        
+        host_port = get_next_available_port()
+        if not host_port:
+            return await ctx.send(embed=create_error_embed("System Error", "No available ports on host."))
+        
+        await ctx.send(embed=create_info_embed("Adding Port Forward", f"Forwarding host port `{host_port}` to `{container_name}:{arg2}`..."))
+        
+        try:
+            await execute_RTC(f"RTC config device add {container_name} port-{host_port}-tcp proxy listen=tcp:0.0.0.0:{host_port} connect=tcp:127.0.0.1:{arg2}")
+            await execute_RTC(f"RTC config device add {container_name} port-{host_port}-udp proxy listen=udp:0.0.0.0:{host_port} connect=udp:127.0.0.1:{arg2}")
+            
+            if user_id not in port_data["active_ports"]:
+                port_data["active_ports"][user_id] = []
+            
+            port_data["active_ports"][user_id].append({
+                "container": container_name,
+                "internal_port": arg2,
+                "host_port": host_port
+            })
+            save_data()
+            await ctx.send(embed=create_success_embed("Port Forward Added", f"Successfully forwarded `{host_port}` (TCP/UDP) to `{container_name}:{arg2}`"))
+        except Exception as e:
+            await ctx.send(embed=create_error_embed("Failed", str(e)))
+
+    elif action == "remove":
+        if arg1 is None:
+            return await ctx.send(embed=create_error_embed("Usage", "Usage: `!ports remove <id>`"))
+        
+        active = port_data["active_ports"].get(user_id, [])
+        found = None
+        for p in active:
+            if p["host_port"] == arg1:
+                found = p
+                break
+        
+        if not found:
+            return await ctx.send(embed=create_error_embed("Not Found", "Port forward ID not found in your list."))
+        
+        try:
+            await execute_RTC(f"RTC config device remove {found['container']} port-{arg1}-tcp")
+            await execute_RTC(f"RTC config device remove {found['container']} port-{arg1}-udp")
+            active.remove(found)
+            save_data()
+            await ctx.send(embed=create_success_embed("Port Forward Removed", f"Successfully removed port forward `{arg1}`"))
+        except Exception as e:
+            await ctx.send(embed=create_error_embed("Failed", str(e)))
+
+@bot.command(name='ports-add-user')
+@is_admin()
+async def ports_add_user(ctx, amount: int, user: discord.Member):
+    """Allocate port slots to user (Admin only)"""
+    user_id = str(user.id)
+    if user_id not in port_data["users"]:
+        port_data["users"][user_id] = {"slots": 0}
+    
+    port_data["users"][user_id]["slots"] += amount
+    save_data()
+    await ctx.send(embed=create_success_embed("Slots Allocated", f"Allocated {amount} port slots to {user.mention}. Total: {port_data['users'][user_id]['slots']}"))
+
+@bot.command(name='snap-status')
+@is_admin()
+async def snap_status(ctx):
+    """Check the status of snap packages on the host (Admin only)"""
+    await ctx.send(embed=create_info_embed("Checking Snap Status", "Fetching list of installed snap packages on the host..."))
+    
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'snap', 'list',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode == 0:
+            output = stdout.decode().strip()
+            if not output:
+                output = "No snap packages found."
+            
+            embed = create_embed("Host Snap Status", "List of installed snap packages on the host machine", 0x00ccff)
+            add_field(embed, "Installed Snaps", f"```\n{output}\n```", False)
+            await ctx.send(embed=embed)
+        else:
+            error_output = stderr.decode().strip() or "Snap command failed"
+            await ctx.send(embed=create_error_embed("Snap Check Failed", f"```\n{error_output}\n```"))
             
     except Exception as e:
         await ctx.send(embed=create_error_embed("Execution Error", str(e)))
@@ -2093,7 +2253,8 @@ async def show_help(ctx):
         ("!manage [@user]", "Manage your VPS or another user's VPS (Admin only)"),
         ("!share-user @user <vps_number>", "Share RathamCloud VPS access"),
         ("!share-ruser @user <vps_number>", "Revoke RathamCloud VPS access"),
-        ("!manage-shared @owner <vps_number>", "Manage shared RathamCloud VPS")
+        ("!manage-shared @owner <vps_number>", "Manage shared RathamCloud VPS"),
+        ("!ports [add|list|remove]", "Manage port forwards (TCP/UDP)")
     ]
 
     user_commands_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in user_commands])
@@ -2130,11 +2291,17 @@ async def show_help(ctx):
             ("!vps-network <container> <action> [value]", "Manage RathamCloud network"),
             ("!vps-processes <container>", "List RathamCloud processes"),
             ("!vps-logs <container> [lines]", "Show RathamCloud system logs"),
-            ("!setup-node <container> [version]", "Install Node.js in a VPS")
+            ("!setup-node <container> [version]", "Install Node.js in a VPS"),
+            ("!snap-status", "Check status of host snap packages"),
+            ("!ports-add-user <amount> @user", "Allocate port slots to user"),
+            ("!ports-remove-user <amount> @user", "Deallocate port slots from user"),
+            ("!ports-revoke <id>", "Revoke specific port forward"),
+            ("!node", "Show node setup instructions")
         ]
 
         admin_commands_text = "\n".join([f"**{cmd}** - {desc}" for cmd, desc in admin_commands])
         add_field(embed, "🛡️ Admin Commands", admin_commands_text, False)
+        add_field(embed, "💡 Tip", "Port forwards work for both TCP and UDP protocols.", False)
         await ctx.send(embed=embed)
 
     if is_user_main_admin:
