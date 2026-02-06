@@ -5,7 +5,7 @@ After=network.target
 [Service]
 User=root
 WorkingDirectory=/opt/rathamcloud-bot
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
 EnvironmentFile=/opt/rathamcloud-bot/.env
 ExecStart=/opt/rathamcloud-bot/venv/bin/python3 main.py
 Restart=always
