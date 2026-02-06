@@ -30,7 +30,7 @@ if [ -d "$INSTALL_DIR" ]; then
         sudo rm -rf "$INSTALL_DIR"
         echo "✅ Bot files and data removed."
     else
-        echo "ℹ️ Skipping directory removal. You can delete it manually with: sudo rm -rf $INSTALL_DIR"
+        echo "ℹ️ Skipping directory removal."
     fi
 fi
 
@@ -38,7 +38,7 @@ fi
 read -p "❓ Do you also want to uninstall LXD? (y/N): " remove_lxd
 if [[ $remove_lxd == [yY] || $remove_lxd == [yY][eE][sS] ]]; then
     echo "📦 Removing LXD via snap..."
-    sudo snap remove lxd
+    sudo snap remove lxd --purge
     echo "✅ LXD removed."
 fi
 
