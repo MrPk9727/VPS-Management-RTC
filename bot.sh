@@ -33,7 +33,7 @@ fi
 
 # 3.5 Install LXD and Create RTC Wrapper
 echo "📦 Checking for LXD/LXC..."
-if ! command -v lxc &> /dev/null; then
+if ! snap list lxd &> /dev/null; then
     echo "📥 Installing LXD via snap..."
     sudo snap install lxd
 fi
