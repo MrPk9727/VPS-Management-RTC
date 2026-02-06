@@ -40,10 +40,21 @@ fi
 
 # Ensure LXD is initialized and storage pool exists
 echo "⚙️ Initializing LXD and Storage..."
+# Explicitly start LXD to ensure the socket is created
+sudo snap start lxd
+
 # Wait for LXD socket to be available
-while [ ! -e /var/snap/lxd/common/lxd/unix.socket ]; do 
-    echo "Waiting for LXD socket..."
+MAX_RETRIES=30
+RETRY_COUNT=0
+while [ ! -e /var/snap/lxd/common/lxd/unix.socket ]; do
+    if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+        echo "❌ Error: LXD socket not found after 60 seconds. Checking service status..."
+        sudo snap services lxd
+        exit 1
+    fi
+    echo "Waiting for LXD socket ($RETRY_COUNT/$MAX_RETRIES)..."
     sleep 2
+    ((RETRY_COUNT++))
 done
 
 sudo lxd init --auto || true
