@@ -13,7 +13,13 @@ export PATH=$PATH:/snap/bin
 
 # 1. Update System
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3 python3-pip python3-venv git curl snapd
+sudo apt install -y python3 python3-pip python3-venv git curl snapd lxc lxc-utils bridge-utils uidmap
+
+# Ensure snapd is enabled and running
+sudo systemctl enable --now snapd.socket
+
+# Debian compatibility: Create symlink for snap if it doesn't exist
+[ -d /var/lib/snapd/snap ] && [ ! -L /snap ] && sudo ln -s /var/lib/snapd/snap /snap
 
 # 2. Setup Directory
 INSTALL_DIR="/opt/rathamcloud-bot"
@@ -33,10 +39,18 @@ fi
 
 # 3.5 Install LXD and Create RTC Wrapper
 echo "📦 Checking for LXD/LXC..."
+# Ensure snapd is fully initialized before proceeding
+echo "⏳ Waiting for snap system to be ready..."
+sudo snap wait system seed.loaded || true
+
 if ! snap list lxd &> /dev/null; then
     echo "📥 Installing LXD via snap..."
     sudo snap install lxd
 fi
+
+# Add current user to lxd group
+sudo usermod -aG lxd $USER || true
+sudo usermod -aG kvm $USER || true
 
 # Ensure LXD is initialized and storage pool exists
 echo "⚙️ Initializing LXD and Storage..."
@@ -63,6 +77,10 @@ if ! sudo lxc storage show default &> /dev/null; then
     echo "🔨 Creating 'default' storage pool..."
     sudo lxc storage create default dir || echo "⚠️ Storage pool creation failed or already exists."
 fi
+
+# Pre-pull the default image to prevent timeouts during first VPS creation
+echo "🚚 Pre-pulling Ubuntu 22.04 image..."
+sudo lxc image copy images:ubuntu/22.04 local: --alias ubuntu:22.04 --quiet || true
 
 echo "🔧 Creating RTC wrapper for LXC..."
 # Find the absolute path to lxc to avoid wrapper loops
