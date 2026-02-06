@@ -7,9 +7,11 @@ set -e
 
 echo "🚀 Starting RathamCloud Bot Installation..."
 
+ORIGINAL_DIR=$(pwd)
+
 # 1. Update System
 sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3 python3-pip python3-venv git curl
+sudo apt install -y python3 python3-pip python3-venv git curl snapd
 
 # 2. Setup Directory
 INSTALL_DIR="/opt/rathamcloud-bot"
@@ -26,6 +28,24 @@ else
     git clone https://github.com/MrPk9727/VPS-Management-RTC.git $INSTALL_DIR
     cd $INSTALL_DIR
 fi
+
+# 3.5 Install LXD and Create RTC Wrapper
+echo "📦 Checking for LXD/LXC..."
+if ! command -v lxc &> /dev/null; then
+    echo "📥 Installing LXD via snap..."
+    sudo snap install lxd
+    sudo lxd init --auto
+fi
+
+echo "🔧 Creating RTC wrapper for LXC..."
+cat <<EOF | sudo tee /usr/local/bin/RTC > /dev/null
+#!/bin/bash
+# RathamCloud RTC Wrapper for LXC
+lxc "\$@"
+EOF
+
+sudo chmod +x /usr/local/bin/RTC
+echo "✅ RTC command installed to /usr/local/bin/RTC"
 
 # 4. Setup Virtual Environment
 echo "🐍 Setting up Python virtual environment..."
