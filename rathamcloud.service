@@ -5,10 +5,8 @@ After=network.target
 [Service]
 User=root
 WorkingDirectory=/opt/rathamcloud-bot
-Environment="DISCORD_TOKEN=your_token_here"
-Environment="MAIN_ADMIN_ID=1210291131301101618"
-Environment="VPS_USER_ROLE_ID=1210291131301101618"
-Environment="DEFAULT_STORAGE_POOL=default"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=/opt/rathamcloud-bot/.env
 ExecStart=/opt/rathamcloud-bot/venv/bin/python3 main.py
 Restart=always
 RestartSec=5
